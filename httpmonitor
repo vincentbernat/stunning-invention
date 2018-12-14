@@ -19,7 +19,6 @@ import asyncio
 import collections
 import datetime
 import logging
-import math
 import sys
 import time
 
@@ -252,34 +251,19 @@ async def main(options):
                                                stats["1 Total requests"])
             stats["0 Requests per second"] = (stats["1 Total requests"] //
                                               options.interval)
-            # Display them (using two columns)
+            # Display them
             print(f"** {now}: stats")
             keys = sorted(stats.keys())
-            for k in range(math.ceil(len(keys)/2)):
-                name = keys[k*2]
-                print(f"{name[2:]:>25}: {stats[name]:<10}",
-                      end="")
-                if k*2+1 < len(keys):
-                    name = keys[k*2+1]
-                    print(f"     {name[2:]:>25}: {stats[name]:<10}")
-                else:
-                    print("")
+            for k in keys:
+                print(f"{k[2:]:>25}: {stats[k]}")
             stats.clear()
             print("")
 
-            # Display top sections (using two columns)
+            # Display top sections
             print(f"** {now}: sections")
-            values = sorted(sections.items(),
-                            key=lambda kv: -kv[1])[:options.top]
-            for v in range(math.ceil(len(values)/2)):
-                section, hit = values[v*2]
-                print(f"{section:>25}: {hit:<10}",
-                      end="")
-                if v*2+1 < len(values):
-                    section, hit = values[v*2+1]
-                    print(f"     {section:>25}: {hit:<10}")
-                else:
-                    print("")
+            for section, hits in sorted(sections.items(),
+                                        key=lambda kv: -kv[1])[:options.top]:
+                print(f"{section:>25}: {hits}")
             sections.clear()
             print("")
 

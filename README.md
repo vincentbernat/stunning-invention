@@ -55,6 +55,10 @@ Spawning a process in Python is easy and reproducing its behavior is
 not totally trivial (notably to follow the file when log rotation
 happens).
 
+The screen real estate is poorly used. There is a version displaying
+stats on two columns (see git history), but I am unconvinced with it.
+I have kept the simpler version.
+
 # Evolution
 
 If at some point, the code exceeds 1000 lines, it will become
