@@ -107,3 +107,11 @@ be able to refresh statistics while displaying alerts on the same
 screen, but this seemed unnecessary. With some additional features, it
 could start to make sense (toggle between stats, going back into
 history, ...).
+
+# Docker
+
+Can be run with:
+
+    docker run docker run -it \
+       -v ~/tmp/access.log:/var/log/access.log \
+       httpmonitor:latest --help
