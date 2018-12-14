@@ -21,6 +21,7 @@ import datetime
 import logging
 import sys
 import time
+import shutil
 
 
 logger = logging.getLogger("httpmonitor")
@@ -31,15 +32,51 @@ class CustomFormatter(argparse.RawDescriptionHelpFormatter,
     pass
 
 
+class Meter(object):
+    """Meter to compute a moving average of some values."""
+
+    def __init__(self, size):
+        """Initialize the meter with the provided number of buckets."""
+        self.values = [0]*size
+        self.size = size
+        self.last = 0
+
+    def increase(self, value, when):
+        """Increase the value at the given timestamp.
+
+        The timestamp is expected to be strictly monotonic. Typically,
+        we can provide ``time.monotonic()`` as a value.
+
+        """
+        when = int(when)
+        if self.last > when:
+            raise ValueError("non monotonic timestamp provided")
+        if self.last == when:
+            self.values[when % self.size] += value
+        else:
+            c1 = (self.last + 1) % self.size
+            c2 = when % self.size
+            while c1 != c2:
+                self.values[c1] = 0
+                c1 = (c1 + 1) % self.size
+            self.values[c2] = value
+            self.last = when
+
+    def average(self):
+        """Return the current average value."""
+        return sum(self.values) / self.size
+
+
 def rate(string):
     """Convert a rate string to type."""
     num, denum = string.split("/", 1)
     num = int(num)
-    return (num,
-            {"s": 1,
-             "m": 60,
-             "h": 3600,
-             "d": 86400}[denum[-1]] * int(denum[:-1] or 1))
+    return collections.namedtuple('Rate', 'hits,interval')(
+        num,
+        {"s": 1,
+         "m": 60,
+         "h": 3600,
+         "d": 86400}[denum[-1]] * int(denum[:-1] or 1))
 
 
 def parse_args():
@@ -222,6 +259,8 @@ def setup_logging(options):
 async def main(options):
     stats = collections.defaultdict(int)
     sections = collections.defaultdict(int)
+    meter = Meter(options.alert.interval)
+    alerts = [[]]
 
     # Log parsing coroutine
     async def parsing():
@@ -241,15 +280,39 @@ async def main(options):
             sections[parsed['request']['uri'][1:].split("/", 1)[0] or '/'] += 1
             # TODO: add more stats?
 
-    # Stats display
+            # Update meter for alerting
+            meter.increase(1, time.monotonic())
+
+    # Alerting coroutine
+    async def alerting():
+        alerting = False
+        while True:
+            await asyncio.sleep(1)
+            # We need to refresh the meter because we may have nothing
+            # to parse since a few seconds.
+            meter.increase(0, time.monotonic())
+            average = meter.average()
+            stats["5 Current alert rate"] = average
+            now = datetime.datetime.now()
+            if average > options.alert.hits and not alerting:
+                alerting = True
+                alerts[0].append(f"High traffic alert - hits = "
+                                 f"{average}, triggered at {now}")
+            elif alerting and average < options.alert.hits:
+                alerting = False
+                alerts[0].append(f"Traffic back to normal - hits = "
+                                 f"{average}, triggered at {now}")
+
+    # Stats and alerts display
     async def display():
         while True:
             await asyncio.sleep(options.interval)
             now = datetime.datetime.now()
             # Add more stats
+            total = stats["1 Total requests"]
             stats["0 Average request size"] = (stats["1 Total size"] //
-                                               stats["1 Total requests"])
-            stats["0 Requests per second"] = (stats["1 Total requests"] //
+                                               total) if total else 0
+            stats["0 Requests per second"] = (total //
                                               options.interval)
             # Display them
             print(f"** {now}: stats")
@@ -267,7 +330,20 @@ async def main(options):
             sections.clear()
             print("")
 
-    done, pending = await asyncio.wait({parsing(), display()},
+            # Alerts
+            columns, lines = shutil.get_terminal_size((80, 25))
+            remaining = max(lines - len(keys) - options.top -
+                            2 -  # two header lines
+                            3 -  # three blank lines
+                            1,   # current line
+                            4)
+            alerts[0] = alerts[0][-remaining:]
+            for alert in alerts[0]:
+                print(alert)
+            if alerts[0]:
+                print("")
+
+    done, pending = await asyncio.wait({parsing(), alerting(), display()},
                                        return_when=asyncio.FIRST_EXCEPTION)
     logger.info("main loop is terminating")
     try:

@@ -1,3 +1,35 @@
+# Screenshot
+
+```
+** 2018-12-14 17:42:18.614160: stats
+     Average request size: 29858
+      Requests per second: 10
+           Total requests: 100
+               Total size: 2985836
+             GET requests: 94
+            HEAD requests: 6
+             2xx requests: 57
+             3xx requests: 42
+             4xx requests: 1
+       Current alert rate: 7.5
+
+** 2018-12-14 17:42:18.614160: sections
+                       en: 58
+                       fr: 33
+                        /: 6
+               robots.txt: 2
+              favicon.ico: 1
+
+Traffic back to normal - hits = 4.0, triggered at 2018-12-14 17:41:21.629837
+High traffic alert - hits = 13.5, triggered at 2018-12-14 17:41:23.632192
+Traffic back to normal - hits = 0.0, triggered at 2018-12-14 17:41:25.635118
+High traffic alert - hits = 12.5, triggered at 2018-12-14 17:41:26.635916
+Traffic back to normal - hits = 0.0, triggered at 2018-12-14 17:41:28.639054
+High traffic alert - hits = 12.5, triggered at 2018-12-14 17:41:29.639463
+Traffic back to normal - hits = 4.5, triggered at 2018-12-14 17:41:30.640968
+High traffic alert - hits = 147.5, triggered at 2018-12-14 17:41:59.673050
+```
+
 # Language choice
 
 This project is written in Python 3 which is great to prototype ideas
@@ -36,7 +68,8 @@ data structures.
 
 You can run tests with `pytest` (or `pytest-3`). [pytest-asyncio][] is
 needed to run the tests. The tests do not cover everything (I don't
-think that would be useful).
+think that would be useful). Most of the alerting logic is bundled
+into the "meter".
 
 [pytest-asyncio]: https://github.com/pytest-dev/pytest-asyncio
 
@@ -58,6 +91,8 @@ happens).
 The screen real estate is poorly used. There is a version displaying
 stats on two columns (see git history), but I am unconvinced with it.
 I have kept the simpler version.
+
+Alerts are only displayed during the general refresh.
 
 # Evolution
 
