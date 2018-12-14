@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+
+"""HTTP log monitoring console program.
+
+httpmonitor consumes an actively written-to w3c-formatted HTTP access
+log and display statistics about them as well as alerts when some
+threshold is hit.
+
+The default threshold is 10 requests par second during the last two
+minutes. This can be customized using ``--alert``. The provided value
+should be a fraction of the number of requests and the duration, like
+``10/2m`` for 10 in the last two minutes or ``5/1s`` for 5 in the last
+second.
+
+"""
+
+import argparse
+import asyncio
+import collections
+import datetime
+import logging
+import math
+import sys
+import time
+
+
+logger = logging.getLogger("httpmonitor")
+
+
+class CustomFormatter(argparse.RawDescriptionHelpFormatter,
+                      argparse.ArgumentDefaultsHelpFormatter):
+    pass
+
+
+def rate(string):
+    """Convert a rate string to type."""
+    num, denum = string.split("/", 1)
+    num = int(num)
+    return (num,
+            {"s": 1,
+             "m": 60,
+             "h": 3600,
+             "d": 86400}[denum[-1]] * int(denum[:-1] or 1))
+
+
+def parse_args():
+    """Parse arguments."""
+    parser = argparse.ArgumentParser(
+        description=sys.modules[__name__].__doc__,
+        formatter_class=CustomFormatter)
+
+    g = parser.add_mutually_exclusive_group()
+    g.add_argument("--debug", "-d", action="store_true",
+                   default=False,
+                   help="enable debugging")
+    g.add_argument("--silent", "-s", action="store_true",
+                   default=False,
+                   help="don't log to console")
+
+    g = parser.add_argument_group("log options")
+    g.add_argument("--logfile", "-l", metavar="LOG",
+                   help="logfile to be monitored",
+                   default="/var/log/access.log")
+    g.add_argument("--interval", "-n", metavar="SECONDS",
+                   help="update interval for statistics",
+                   type=int,
+                   default=10)
+    g.add_argument("--top", metavar="N",
+                   help="display top N sections",
+                   type=int,
+                   default=5)
+
+    g = parser.add_argument_group("alerting options")
+    g.add_argument("--alert", metavar="REQ/DURATION",
+                   help="alert threshold for requests/second",
+                   type=rate,
+                   default="1200/2m")
+
+    options = parser.parse_args()
+    return options
+
+
+def parse_string(string, delim):
+    """Parse a string until hitting a provided delimiter.
+
+    Returns a tuple of the parsed string and the remaining string
+    (both without the delimiter). This function obeys escaping with
+    backslash. If the end delimiter is absent, ValueError exception is
+    triggered.
+
+    """
+    end = 0
+    length = len(string)
+    while end < length:
+        if string[end] == "\\":
+            # Skip escaped character
+            string = string[:end] + string[end+1:]
+            end += 1
+            length -= 1
+            continue
+        if string[end] == delim:
+            # Delimiter found
+            break
+        end += 1
+    # Out of the loop, either we hit the end, or we hit the delimiter.
+    if end >= length:
+        raise ValueError(f"end delimiter `{delim}' not found")
+    return string[:end], string[(end+1):]
+
+
+def parse_datetime(string):
+    """Parse a date/time string into a datetime.
+
+    This triggers ValueError in case of problems. The assumed format
+    is "09/May/2018:16:00:39 +0000".
+
+    """
+    parsed = time.strptime(string, "%d/%b/%Y:%H:%M:%S %z")
+    return datetime.datetime(*parsed[:6],
+                             tzinfo=datetime.timezone(datetime.timedelta(
+                                 seconds=parsed.tm_gmtoff)))
+
+
+def parse_request(string):
+    """Parse an HTTP request.
+
+    Return a dictionary with the method, the URI and the protocol.
+    Triggers ValueError in case of issue.
+    """
+    method, remaining = parse_string(string, " ")
+    # TODO: validate method
+    uri, remaining = parse_string(remaining, " ")
+    protocol = remaining
+    if protocol not in {
+            "HTTP/0.9",
+            "HTTP/1.0",
+            "HTTP/1.1",
+            "HTTP/2.0",
+    }:
+        raise ValueError(f"invalid protocol `{protocol}'")
+    return dict(
+        method=method.upper(),
+        uri=uri,
+        protocol=protocol)
+
+
+def parse_logline(line):
+    """Parse a w3c-formatted log line.
+
+    See https://www.w3.org/Daemon/User/Config/Logging.html. The
+    specification doesn't say what happens if some fields contain a
+    space character. We assume that backslash is used for escaping on
+    any field.
+
+    Return a dictionary with all the fields or raise ValueError on
+    invalid log lines.
+
+    """
+    line = line.strip()
+    ip, remaining = parse_string(line, " ")
+    user, remaining = parse_string(remaining, " ")
+    auth, remaining = parse_string(remaining, " ")
+    if remaining[:1] != "[":
+        raise ValueError("missing date")
+    date, remaining = parse_string(remaining[1:], "]")
+    if remaining[:1] != " ":
+        raise ValueError("missing space after date")
+    if remaining[1:2] != "\"":
+        raise ValueError("missing request")
+    request, remaining = parse_string(remaining[2:], "\"")
+    if remaining[:1] != " ":
+        raise ValueError("missing space after request")
+    status, size = parse_string(remaining[1:], " ")
+    status = int(status)
+    if status < 100 or status > 599:
+        raise ValueError(f"invalid status value `{status}'")
+    size = int(size)
+    if size < 0:
+        raise ValueError(f"invalid size `{size}'")
+    return dict(
+        ip=ip,
+        user=user,
+        auth=auth,
+        date=parse_datetime(date),
+        request=parse_request(request),
+        status=status,
+        size=size)
+
+
+async def follow_file(name):
+    """Follow a log file and yields log lines.
+
+    This is using ``tail`` and if the file is rotated, we should
+    continue to get log lines. Log lines are not parsed. In case of
+    tail error, we let the error flow up on stderr.
+
+    """
+    proc = await asyncio.create_subprocess_exec("tail",
+                                                "--follow=name",
+                                                "-n0",
+                                                name,
+                                                stdout=asyncio.subprocess.PIPE)
+    while True:
+        data = await proc.stdout.readline()
+        if data == b"":
+            # We assume the only way to get to EOF is to have the
+            # process terminated.
+            await proc.wait()
+            raise RuntimeError("unexpected termination of tail "
+                               f"process for `{name}'")
+        yield data.decode('ascii', 'ignore')
+
+
+def setup_logging(options):
+    """Configure logging."""
+    root = logging.getLogger("")
+    root.setLevel(logging.WARNING)
+    logger.setLevel(options.debug and logging.DEBUG or logging.INFO)
+    if not options.silent:
+        root.addHandler(logging.StreamHandler(sys.stderr))
+
+
+async def main(options):
+    stats = collections.defaultdict(int)
+    sections = collections.defaultdict(int)
+
+    # Log parsing coroutine
+    async def parsing():
+        async for line in follow_file(options.logfile):
+            try:
+                parsed = parse_logline(line)
+            except ValueError as e:
+                logger.debug(f"Unable to parse `{line}': {e}")
+                stats["9 Unparsable log lines"] += 1
+                continue
+            stats["1 Total requests"] += 1
+            stats["1 Total size"] += parsed['size']
+            # We assume we don't have many of them
+            stats[f"2 {parsed['request']['method']} requests"] += 1
+            stats[f"3 {parsed['status']//100}xx requests"] += 1
+            # Collect stats for sections. We assume they all start with "/".
+            sections[parsed['request']['uri'][1:].split("/", 1)[0] or '/'] += 1
+            # TODO: add more stats?
+
+    # Stats display
+    async def display():
+        while True:
+            await asyncio.sleep(options.interval)
+            now = datetime.datetime.now()
+            # Add more stats
+            stats["0 Average request size"] = (stats["1 Total size"] //
+                                               stats["1 Total requests"])
+            stats["0 Requests per second"] = (stats["1 Total requests"] //
+                                              options.interval)
+            # Display them (using two columns)
+            print(f"** {now}: stats")
+            keys = sorted(stats.keys())
+            for k in range(math.ceil(len(keys)/2)):
+                name = keys[k*2]
+                print(f"{name[2:]:>25}: {stats[name]:<10}",
+                      end="")
+                if k*2+1 < len(keys):
+                    name = keys[k*2+1]
+                    print(f"     {name[2:]:>25}: {stats[name]:<10}")
+                else:
+                    print("")
+            stats.clear()
+            print("")
+
+            # Display top sections (using two columns)
+            print(f"** {now}: sections")
+            values = sorted(sections.items(),
+                            key=lambda kv: -kv[1])[:options.top]
+            for v in range(math.ceil(len(values)/2)):
+                section, hit = values[v*2]
+                print(f"{section:>25}: {hit:<10}",
+                      end="")
+                if v*2+1 < len(values):
+                    section, hit = values[v*2+1]
+                    print(f"     {section:>25}: {hit:<10}")
+                else:
+                    print("")
+            sections.clear()
+            print("")
+
+    done, pending = await asyncio.wait({parsing(), display()},
+                                       return_when=asyncio.FIRST_EXCEPTION)
+    logger.info("main loop is terminating")
+    try:
+        for future in done:
+            # Raise an exception if there was an exception
+            future.result()
+    finally:
+        for future in pending:
+            # Cancel remaining pending tasks
+            future.cancel()
+
+
+if __name__ == "__main__":
+    options = parse_args()
+    setup_logging(options)
+
+    try:
+        loop = asyncio.get_event_loop()
+        try:
+            loop.run_until_complete(main(options))
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            if options.debug:
+                # On interrupt, there will be some warnings about
+                # non-finished tasks. It's pointless to terminate
+                # them.
+                loop.close()
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except Exception as e:
+        logger.exception("%s", e)
+        sys.exit(1)
