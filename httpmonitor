@@ -277,7 +277,7 @@ async def main(options):
             stats[f"2 {parsed['request']['method']} requests"] += 1
             stats[f"3 {parsed['status']//100}xx requests"] += 1
             # Collect stats for sections. We assume they all start with "/".
-            sections[parsed['request']['uri'][1:].split("/", 1)[0] or '/'] += 1
+            sections[parsed['request']['uri'][1:].split("/", 1)[0]] += 1
             # TODO: add more stats?
 
             # Update meter for alerting
@@ -326,6 +326,7 @@ async def main(options):
             print(f"** {now}: sections")
             for section, hits in sorted(sections.items(),
                                         key=lambda kv: -kv[1])[:options.top]:
+                section = f"/{section}"
                 print(f"{section:>25}: {hits}")
             sections.clear()
             print("")
