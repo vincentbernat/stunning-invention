@@ -1,3 +1,12 @@
+> Interview puzzle to create a simple HTTP log monitoring program
+
+I don't remember the exact requirements, but they should be similar to
+the ones in [Elk'ish](https://github.com/syntaqx/elkish). The language
+was left to the reader.
+
+The repository name is obfuscated and the branch is not master to
+not spoil this exercise for company using it.
+
 # Screenshot
 
 ```
