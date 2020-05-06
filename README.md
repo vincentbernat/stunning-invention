@@ -121,6 +121,6 @@ history, ...).
 
 Can be run with:
 
-    docker run docker run -it \
+    docker run -it \
        -v ~/tmp/access.log:/var/log/access.log \
        httpmonitor:latest --help
